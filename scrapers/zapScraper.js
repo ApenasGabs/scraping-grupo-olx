@@ -29,12 +29,19 @@ const logError = async (message, details = {}) => {
 };
 
 const getHouseList = async (page) => {
-  return await page.evaluate(() => {
+  const basicData = await page.evaluate(() => {
     const filteredItems = Array.from(
       document.querySelectorAll(
         'div.listings-wrapper li[data-cy="rp-property-cd"]'
       )
     );
+    const generatePropertyId = () => {
+      const now = new Date();
+      const timestamp = now.getTime();
+      const randomSuffix = Math.floor(Math.random() * 1000);
+
+      return `prop_${timestamp}_${randomSuffix}`;
+    };
 
     return filteredItems.map((li, idx) => {
       const card = li.querySelector('div[data-testid="card"]');
@@ -52,6 +59,7 @@ const getHouseList = async (page) => {
           'div[data-cy="rp-cardProperty-image-img"] ul li img'
         )
       ).map((img) => img.src);
+
       const price = card
         .querySelector('div[data-cy="rp-cardProperty-price-txt"] p')
         ?.innerText?.replace(/[R$\s.]/g, "");
@@ -59,24 +67,18 @@ const getHouseList = async (page) => {
       const address = card.querySelector(
         '[data-cy="rp-cardProperty-location-txt"]'
       )?.innerText;
-      const duplicatedButton = card.querySelector(
-        'button[data-cy="listing-card-deduplicated-button"]'
-      );
 
-      const hasDuplicates = duplicatedButton !== null;
+      const hasDuplicates =
+        card.querySelector(
+          'button[data-cy="listing-card-deduplicated-button"]'
+        ) !== null;
 
       const liId = `house-item-${idx}`;
       li.id = liId;
 
       const simpleLink = li.querySelector("a")?.href;
-      function generatePropertyId() {
-        const now = new Date();
-        const timestamp = now.getTime();
-        const randomSuffix = Math.floor(Math.random() * 1000);
 
-        return `prop_${timestamp}_${randomSuffix}`;
-      }
-      const house = {
+      return {
         id: generatePropertyId(),
         address,
         description,
@@ -87,29 +89,26 @@ const getHouseList = async (page) => {
         scrapedAt: new Date().toISOString(),
         elementId: liId,
       };
-
-      return house;
     });
   });
-};
 
-const processDuplicatedLinks = async (page, houses) => {
-  for (let i = 0; i < houses.length; i++) {
-    const house = houses[i];
+  const results = [];
+  for (const house of basicData) {
     if (house.hasDuplicates) {
       try {
-        await page.waitForSelector(
-          `#${house.elementId} button[data-cy="listing-card-deduplicated-button"]`
-        );
         await page.click(
           `#${house.elementId} button[data-cy="listing-card-deduplicated-button"]`
         );
 
+        // Espere pelo modal
         await page.waitForSelector(
           'section[data-cy="deduplication-modal-list-step"]',
-          { timeout: 5000 }
+          {
+            timeout: 5000,
+          }
         );
 
+        // Obtenha os links alternativos
         const links = await page.evaluate(() => {
           const linksSection = document.querySelector(
             'section[data-cy="deduplication-modal-list-step"]'
@@ -120,22 +119,25 @@ const processDuplicatedLinks = async (page, houses) => {
           );
         });
 
+        // Atualize o link se houver alternativas
         if (links && links.length > 0) {
           house.link = links[0];
         }
 
+        // Feche o modal
         await page.keyboard.press("Escape");
-
         await page.waitForTimeout(500);
       } catch (error) {
-        console.log(
-          `Erro ao processar duplicados para casa ${i}:`,
-          error.message
+        console.error(
+          `Erro ao processar duplicados para ${house.elementId}:`,
+          error
         );
       }
     }
+    results.push(house);
   }
-  return houses;
+
+  return results;
 };
 
 module.exports = async (maxPrice) => {
@@ -172,11 +174,14 @@ module.exports = async (maxPrice) => {
             timeout: 10000,
           });
         } catch (selectorError) {
-          await logError("Falha ao encontrar div.listings-wrapper", {
-            page: pageNumber,
-            url,
-            errorMessage: selectorError.message,
-          });
+          await logError(
+            `Falha ao encontrar div.listings-wrapper ${selectorError}`,
+            {
+              page: pageNumber,
+              url,
+              errorMessage: selectorError.message,
+            }
+          );
 
           const hasContent = await page.evaluate(() => {
             return document.body.innerText.length > 100;
@@ -192,8 +197,6 @@ module.exports = async (maxPrice) => {
         await simulateInteractions(page, "zapInteractionData");
 
         let newHouses = await getHouseList(page);
-
-        newHouses = await processDuplicatedLinks(page, newHouses);
 
         console.log("newHouses: ", newHouses);
 
@@ -213,7 +216,7 @@ module.exports = async (maxPrice) => {
         pageNumber++;
         await browser.close();
       } catch (pageError) {
-        await logError(`Erro ao processar página ${pageNumber}`, {
+        await logError(`Erro ao processar página ${pageNumber}, ${pageError}`, {
           url,
           errorMessage: pageError.message,
         });
